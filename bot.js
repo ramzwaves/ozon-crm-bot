@@ -17,7 +17,7 @@ app.use((req, res, next) => {
     next();
 });
 
-// Очистка старых кодов
+// Очистка старых кодов каждые 30 секунд (живут 3 минуты)
 setInterval(() => {
     const now = Date.now();
     for (const [code, data] of Object.entries(codes)) {
@@ -70,7 +70,23 @@ app.post('/check-code', (req, res) => {
     res.json({ success: true, pending: true });
 });
 
-// 3. Webhook для Telegram (сюда приходят сообщения)
+// 3. Отправка тестового сообщения через сервер (обход блокировки api.telegram.org)
+app.post('/test-message', async (req, res) => {
+    try {
+        const { userId } = req.body;
+        if (!userId) return res.json({ success: false, error: 'Нет ID пользователя' });
+
+        // Отправляем сообщение от имени бота
+        await sendTelegram(userId, `🧪 *Тестовое сообщение!*\n\nЕсли вы это видите, значит связь настроена идеально! 🚀`);
+        
+        res.json({ success: true });
+    } catch (error) {
+        console.error('❌ Ошибка теста:', error);
+        res.json({ success: false, error: error.message });
+    }
+});
+
+// 4. Webhook для Telegram (сюда приходят сообщения)
 app.post('/webhook', async (req, res) => {
     try {
         const update = req.body;
@@ -100,7 +116,7 @@ app.post('/webhook', async (req, res) => {
             
             console.log(`✅ Пользователь ${userName} (${userId}) привязан по коду ${text}`);
             
-            await sendTelegram(chatId, `✅ *Аккаунт успешно привязан!*\n\nПривет, ${userName}!`);
+            await sendTelegram(chatId, `✅ *Аккаунт успешно привязан!*\n\nПривет, ${userName}!\n\nТеперь вы будете получать уведомления о тикетах в Ozon CRM.\n\n🚀 *Приятной работы!*`);
 
         } else if (isCode) {
             await sendTelegram(chatId, `❌ Код ${text} не найден.`);
@@ -117,6 +133,7 @@ app.post('/webhook', async (req, res) => {
     }
 });
 
+// Функция отправки сообщения в Telegram
 async function sendTelegram(chatId, text) {
     try {
         const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
@@ -125,7 +142,9 @@ async function sendTelegram(chatId, text) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ chat_id: chatId, text: text, parse_mode: 'Markdown' })
         });
-    } catch (e) {}
+    } catch (e) {
+        console.error('❌ Ошибка отправки в Telegram:', e);
+    }
 }
 
 app.get('/', (req, res) => res.send('🚀 Ozon CRM Bot работает!'));
