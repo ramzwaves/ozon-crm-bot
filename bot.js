@@ -6,10 +6,9 @@ const BOT_TOKEN = "8391874688:AAEYtVfDVlzs-L26m7tXEVEzqrAukhyCitE";
 // Хранилище кодов (в памяти процесса)
 let codes = {};
 
-// Middleware для парсинга JSON
 app.use(express.json());
 
-// Разрешаем CORS (для запросов из расширения)
+// Разрешаем CORS (чтобы расширение могло делать запросы)
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -18,18 +17,18 @@ app.use((req, res, next) => {
     next();
 });
 
-// Очистка старых кодов каждые 30 секунд
+// Очистка старых кодов
 setInterval(() => {
     const now = Date.now();
     for (const [code, data] of Object.entries(codes)) {
-        if (now - data.createdAt > 180000) { // 3 минуты
+        if (now - data.createdAt > 180000) {
             delete codes[code];
             console.log(`🗑️ Код ${code} удален (истек)`);
         }
     }
 }, 30000);
 
-// 1. Создание кода (вызывается из расширения)
+// 1. Создание кода (из расширения)
 app.post('/add-code', (req, res) => {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     let code = '';
@@ -37,28 +36,41 @@ app.post('/add-code', (req, res) => {
         code += chars.charAt(Math.floor(Math.random() * chars.length));
     }
     codes[code] = { createdAt: Date.now(), used: false, userId: null, userName: null };
-    console.log(`🔑 Создан код: ${code}. Всего кодов: ${Object.keys(codes).length}`);
+    console.log(`🔑 Создан код: ${code}`);
     res.json({ success: true, code: code });
 });
 
-// 2. Проверка кода (вызывается из расширения)
+// 2. Проверка кода (из расширения)
 app.post('/check-code', (req, res) => {
     const { code } = req.body;
+    
     if (!code || !codes[code]) {
         return res.json({ success: false, error: 'Код не найден' });
     }
+    
     const data = codes[code];
-    if (data.used) {
-        return res.json({ success: false, error: 'Код уже использован' });
+    
+    // Если код был использован в Telegram — отдаем данные расширению!
+    if (data.used && data.userId) {
+        return res.json({ 
+            success: true, 
+            pending: false, 
+            userId: data.userId, 
+            userName: data.userName 
+        });
     }
+    
+    // Если код истек
     if (Date.now() - data.createdAt > 180000) {
         delete codes[code];
         return res.json({ success: false, error: 'Код истек' });
     }
+    
+    // Если код еще ждет отправки в бот
     res.json({ success: true, pending: true });
 });
 
-// 3. Webhook для Telegram (сюда приходят сообщения от пользователей)
+// 3. Webhook для Telegram (сюда приходят сообщения)
 app.post('/webhook', async (req, res) => {
     try {
         const update = req.body;
@@ -71,41 +83,31 @@ app.post('/webhook', async (req, res) => {
 
         console.log(`📨 Сообщение от ${userName} (${userId}): "${text}"`);
 
-        // Проверка, является ли текст кодом (6 символов, буквы и цифры)
         const isCode = /^[A-Z0-9]{6}$/.test(text);
 
         if (isCode && codes[text]) {
             const codeData = codes[text];
             
             if (codeData.used) {
-                await sendTelegram(chatId, '❌ Этот код уже использован. Запросите новый в расширении.');
+                await sendTelegram(chatId, '❌ Этот код уже использован.');
                 return res.sendStatus(200);
             }
-            if (Date.now() - codeData.createdAt > 180000) {
-                delete codes[text];
-                await sendTelegram(chatId, '⏰ Код истек. Запросите новый в расширении.');
-                return res.sendStatus(200);
-            }
-
-            // Код валиден — привязываем
+            
+            // СОХРАНЯЕМ ДАННЫЕ ПОЛЬЗОВАТЕЛЯ В КОД
             codeData.used = true;
             codeData.userId = userId;
             codeData.userName = userName;
+            
             console.log(`✅ Пользователь ${userName} (${userId}) привязан по коду ${text}`);
             
-            // Отправляем подтверждение
-            await sendTelegram(chatId, `✅ *Аккаунт успешно привязан!*\n\nПривет, ${userName}!\n\nТеперь вы будете получать уведомления о новых тикетах в Ozon CRM.\n\n🚀 *Приятной работы!*`);
-            
-            // Удаляем использованный код
-            delete codes[text];
+            await sendTelegram(chatId, `✅ *Аккаунт успешно привязан!*\n\nПривет, ${userName}!`);
 
         } else if (isCode) {
-            // Код не найден
-            await sendTelegram(chatId, `❌ Код ${text} не найден.\n\n⚠️ Код действителен только 3 минуты.\n🔄 Запросите новый код в расширении.`);
+            await sendTelegram(chatId, `❌ Код ${text} не найден.`);
         } else if (text === '/START' || text === 'СТАРТ') {
-            await sendTelegram(chatId, `👋 *Привет, ${userName}!*\n\nЯ — бот для уведомлений о тикетах в Ozon CRM.\n\n📋 *Чтобы начать:*\n1. Установите расширение Ozon CRM Notifier\n2. Нажмите "Привязать Telegram аккаунт"\n3. Отправьте код мне\n\n🚀 *Приятной работы!*`);
+            await sendTelegram(chatId, `👋 *Привет, ${userName}!*\n\nОтправь мне код из расширения.`);
         } else {
-            await sendTelegram(chatId, `❓ *Неизвестная команда*\n\nОтправьте /start для инструкции.`);
+            await sendTelegram(chatId, `❓ Отправь /start`);
         }
 
         res.sendStatus(200);
@@ -115,29 +117,17 @@ app.post('/webhook', async (req, res) => {
     }
 });
 
-// Функция отправки сообщения в Telegram
 async function sendTelegram(chatId, text) {
     try {
         const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
         await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                chat_id: chatId,
-                text: text,
-                parse_mode: 'Markdown'
-            })
+            body: JSON.stringify({ chat_id: chatId, text: text, parse_mode: 'Markdown' })
         });
-    } catch (e) {
-        console.error('❌ Ошибка отправки в Telegram:', e);
-    }
+    } catch (e) {}
 }
 
-// Главная страница (для проверки работоспособности)
-app.get('/', (req, res) => {
-    res.send('🚀 Ozon CRM Bot работает!');
-});
+app.get('/', (req, res) => res.send('🚀 Ozon CRM Bot работает!'));
 
-app.listen(PORT, () => {
-    console.log(`🚀 Бот запущен на порту ${PORT}`);
-});
+app.listen(PORT, () => console.log(`🚀 Бот запущен на порту ${PORT}`));
